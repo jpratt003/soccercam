@@ -1,5 +1,5 @@
 # soccercam
-#Open Source Soccer Camera
+## Open Source Soccer Camera
 
 This project is designed to provide a simple, DIY soccer camera to make it easier for more players to get feedback on their play and improve. It attempts to use lower-cost components and provides plenty of opportunity for improvements within that space. The goal is to capture the moments of the game - good, bad, and learning opportunities - to help players improve.
 
