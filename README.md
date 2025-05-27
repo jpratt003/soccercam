@@ -7,6 +7,7 @@ This project is designed to provide a simple, DIY soccer camera to make it easie
 The approach is to use a Raspberry Pi 5 with a pair of cameras and a tripod. 
 I used these [wide-angle cameras](https://www.amazon.com/dp/B07L2SY756?ref=ppx_yo2ov_dt_b_fed_asin_title).  
 A [Raspberry Pi 5](https://www.amazon.com/dp/B0CK2FCG1K?ref=ppx_yo2ov_dt_b_fed_asin_title) with an [SD card](https://www.amazon.com/dp/B07R8GVGN9?ref=ppx_yo2ov_dt_b_fed_asin_title) and [case](https://www.amazon.com/dp/B0CLYHPL5G?ref=ppx_yo2ov_dt_b_fed_asin_title). I used a [bigger power bank](https://www.amazon.com/dp/B0BF54MTCG?ref=ppx_yo2ov_dt_b_fed_asin_title), but it is excessive and doesn't supply enough current to run full speed anyway (don't worry, recording still works).
+For the [tripod](https://www.amazon.com/dp/B09DY2652X?ref=ppx_yo2ov_dt_b_fed_asin_title), I used a smaller one. While there are probably reasonably-priced options for taller ones, I wanted to start a little cheaper.
 
 For the initial MVP, I simply mounted them to a sheet of plexiglass with Gorilla tape. I plan to design a 3D printed case for it at some point soon.
 
