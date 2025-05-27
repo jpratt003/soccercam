@@ -3,8 +3,8 @@ import math
 import numpy as np
 
 # Create a VideoCapture object
-cam1_path= '/home/jpratt/code/soccercam/stenger1cam1.mp4'
-cam2_path= '/home/jpratt/code/soccercam/stenger1cam2.mp4'
+cam1_path= '/home/jpratt/code/soccercam/videos/stenger3cam1.mp4'
+cam2_path= '/home/jpratt/code/soccercam/videos/stenger3cam2.mp4'
 cap1 = cv2.VideoCapture(cam1_path)
 cap2 = cv2.VideoCapture(cam2_path)
 
@@ -23,7 +23,7 @@ if frame_rate1 != frame_rate2:
     print(f"Frame rates don't match! {frame_rate1} != {frame_rate2}")
     exit(1)
 
-out_path= '/home/jpratt/code/soccercam/stenger1combined.mp4'
+out_path= '/home/jpratt/code/soccercam/videos/stenger3combined.mp4'
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out_cap = cv2.VideoWriter(out_path, fourcc, float(frame_rate1), (int(width1+width2),int(height1)))
 # out_cap = cv2.VideoWriter(out_path, fourcc, 32.0, (2560, 720))
