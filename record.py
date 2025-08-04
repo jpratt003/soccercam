@@ -53,7 +53,6 @@ class CameraRecorder:
         self.camera.stop_recording()
 
     def start_preview(self, preview_type=Preview.QT):
-        # self.camera.start_preview(preview_type, hflip=True, vflip=True)
         self.camera.start_preview(preview_type)
 
     def stop_preview(self):
