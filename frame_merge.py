@@ -32,7 +32,13 @@ from collections import deque
 
 from ultralytics import YOLO
 
-def letterbox_image(image, target_size=(640, 640), fill_value=(128, 128, 128)):
+
+YOLO_IMAGE_SIZE = 640
+
+
+def letterbox_image(
+    image, target_size=(YOLO_IMAGE_SIZE, YOLO_IMAGE_SIZE), fill_value=(128, 128, 128)
+):
     """
     Resizes an image while preserving aspect ratio and pads it to the target size.
 
@@ -48,7 +54,7 @@ def letterbox_image(image, target_size=(640, 640), fill_value=(128, 128, 128)):
     target_w, target_h = target_size
 
     scale = min(target_w / w, target_h / h)
-    
+
     new_w = int(w * scale)
     new_h = int(h * scale)
 
@@ -65,6 +71,29 @@ def letterbox_image(image, target_size=(640, 640), fill_value=(128, 128, 128)):
     letterboxed_image[pad_y:pad_y + new_h, pad_x:pad_x + new_w, :] = resized_image
 
     return letterboxed_image
+
+
+def filter_boxes_by_location(
+    boxes, min_x=0, max_x=YOLO_IMAGE_SIZE, min_y=0, max_y=YOLO_IMAGE_SIZE
+):
+    """
+    Filters bounding boxes based on their center coordinates.
+    Args:
+        boxes: YOLO boxes object containing bounding box coordinates.
+        min_x (int): Minimum x-coordinate for the center of the box.
+        max_x (int): Maximum x-coordinate for the center of the box.
+        min_y (int): Minimum y-coordinate for the center of the box.
+        max_y (int): Maximum y-coordinate for the center of the box.
+    Returns:
+        Filtered YOLO boxes object.
+    """
+    filtered_indices = []
+    for i, box in enumerate(boxes.xywh):  # Iterate through bounding box coordinates (x_center, y_center, width, height)
+        x_center, y_center, _, _ = box
+        if x_center < max_x and x_center > min_x and y_center < max_y and y_center > min_y:
+            filtered_indices.append(i)
+
+    return boxes[filtered_indices]
 
 
 def main():
@@ -138,11 +167,12 @@ def main():
         frame_rate1 = min(frame_rate1, frame_rate2)
 
     if args.debug:
-        width1 = height1 = 640
+        width1 = YOLO_IMAGE_SIZE * 2
+        height1 = YOLO_IMAGE_SIZE
 
     # Prepare output video writer
     if args.debug:
-        print(f"Output video will be {width1}x{height1} at {frame_rate1} FPS")
+        print(f"Output video will be {width1 * 2}x{height1} at {frame_rate1} FPS")
     else:
         print(f"Output video will be {width1}x{height1} at {frame_rate1} FPS (debug mode off)")
 
@@ -169,8 +199,6 @@ def main():
         ret2, frame2 = cap2.read()
         if not (ret1 and ret2):
             break
-        frame1 = cv2.flip(frame1, -1)
-        frame2 = cv2.flip(frame2, -1)
 
         frame1_resized = letterbox_image(frame1)
         frame2_resized = letterbox_image(frame2)
@@ -178,13 +206,39 @@ def main():
         results1 = model(frame1_resized, verbose=False)
         results2 = model(frame2_resized, verbose=False)
 
+        results1[0].boxes = filter_boxes_by_location(
+            results1[0].boxes,
+            min_x=int(0.2 * YOLO_IMAGE_SIZE),
+            max_y=int(0.8 * YOLO_IMAGE_SIZE),
+        )
+        results2[0].boxes = filter_boxes_by_location(
+            results2[0].boxes,
+            max_x=int(0.8 * YOLO_IMAGE_SIZE),
+            max_y=int(0.8 * YOLO_IMAGE_SIZE),
+        )
         count1 = len(results1[0].boxes)
         count2 = len(results2[0].boxes)
         cam1_detection_lookahead.append(count1)
         cam2_detection_lookahead.append(count2)
         if args.debug:
-            cam1_lookahead_frames.append(results1[0].plot())
-            cam2_lookahead_frames.append(results2[0].plot())
+            cam1_lookahead_frames.append(
+                cv2.rectangle(
+                    cv2.hconcat([results1[0].plot(), results2[0].plot()]),
+                    (0, 0),
+                    (YOLO_IMAGE_SIZE, YOLO_IMAGE_SIZE),
+                    (0, 255, 0),
+                    2,
+                )
+            )
+            cam2_lookahead_frames.append(
+                cv2.rectangle(
+                    cv2.hconcat([results1[0].plot(), results2[0].plot()]),
+                    (YOLO_IMAGE_SIZE, 0),
+                    (YOLO_IMAGE_SIZE * 2, YOLO_IMAGE_SIZE),
+                    (0, 255, 0),
+                    2,
+                )
+            )
         else:
             cam1_lookahead_frames.append(frame1)
             cam2_lookahead_frames.append(frame2)
@@ -209,6 +263,7 @@ def main():
     cap1.release()
     cap2.release()
     out_cap.release()
+
 
 if __name__ == "__main__":
     main()

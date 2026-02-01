@@ -20,9 +20,12 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+
 import time
 import argparse
 import os
+import signal
+import sys
 
 from picamera2 import Picamera2, Preview
 from picamera2.encoders import H264Encoder
@@ -42,9 +45,15 @@ class CameraRecorder:
     def configure(self):
         video_config = self.camera.create_video_configuration(
             transform=Transform(hflip=self.hflip, vflip=self.vflip),
-            main={"size": (2592, 1944), "format": "RGB888"},  # Main stream for recording
-            lores={"size": (640, 480), "format": "RGB888"},  # Low-res stream for preview
-            controls={'FrameRate': 30}  # Set desired frame rate
+            main={
+                "size": (2592, 1944),
+                "format": "RGB888",
+            },  # Main stream for recording
+            lores={
+                "size": (640, 480),
+                "format": "RGB888",
+            },  # Low-res stream for preview
+            controls={"FrameRate": 30},  # Set desired frame rate
         )
 
         self.camera.configure(video_config)
@@ -63,6 +72,21 @@ class CameraRecorder:
 
     def stop(self):
         self.camera.stop()
+
+
+def cleanup_cameras(cam1, cam2, preview_enabled):
+    print("\nStopping recording and shutting down cameras...")
+    cam2.stop_recording()
+    cam1.stop_recording()
+
+    if preview_enabled:
+        cam1.stop_preview()
+        cam2.stop_preview()
+
+    cam2.stop()
+    cam1.stop()
+    print("Cameras stopped successfully")
+    sys.exit(0)
 
 
 def main():
@@ -97,6 +121,12 @@ def main():
     cam1 = CameraRecorder(0, output1_path)
     cam2 = CameraRecorder(1, output2_path)
 
+    # Set up signal handler for graceful shutdown
+    def signal_handler(signum, frame):
+        cleanup_cameras(cam1, cam2, args.preview)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     if args.preview:
         cam1.start_preview()
         cam2.start_preview()
@@ -104,20 +134,16 @@ def main():
     cam1.configure()
     cam2.configure()
 
+    print("Starting recording... Press Ctrl+C to stop")
     cam1.start_recording()
     cam2.start_recording()
 
-    time.sleep(args.duration * 60)
-
-    cam2.stop_recording()
-    cam1.stop_recording()
-
-    if args.preview:
-        cam1.stop_preview()
-        cam2.stop_preview()
-
-    cam2.stop()
-    cam1.stop()
+    try:
+        time.sleep(args.duration * 60)
+        cleanup_cameras(cam1, cam2, args.preview)
+    except KeyboardInterrupt:
+        # This is a fallback in case the signal handler doesn't catch it
+        cleanup_cameras(cam1, cam2, args.preview)
 
 
 if __name__ == "__main__":
