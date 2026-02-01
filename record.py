@@ -31,7 +31,7 @@ from libcamera import Transform
 
 
 class CameraRecorder:
-    def __init__(self, camera_id, output_file, hflip=True, vflip=True):
+    def __init__(self, camera_id, output_file, hflip=False, vflip=False):
         self.camera = Picamera2(camera_id)
         self.output_file = output_file
         self.encoder = H264Encoder(10000000)
@@ -41,7 +41,10 @@ class CameraRecorder:
 
     def configure(self):
         video_config = self.camera.create_video_configuration(
-            transform=Transform(hflip=self.hflip, vflip=self.vflip)
+            transform=Transform(hflip=self.hflip, vflip=self.vflip),
+            main={"size": (2592, 1944), "format": "RGB888"},  # Main stream for recording
+            lores={"size": (640, 480), "format": "RGB888"},  # Low-res stream for preview
+            controls={'FrameRate': 30}  # Set desired frame rate
         )
 
         self.camera.configure(video_config)
