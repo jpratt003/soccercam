@@ -32,15 +32,29 @@ from picamera2.encoders import H264Encoder
 from picamera2.outputs import FfmpegOutput
 from libcamera import Transform
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _safe_directory(user_dir: str) -> str:
+    """Return an absolute path inside PROJECT_DIR for a given user-supplied directory."""
+    # Treat user_dir as relative to project dir if not absolute
+    if os.path.isabs(user_dir):
+        candidate = os.path.abspath(user_dir)
+    else:
+        candidate = os.path.abspath(os.path.join(PROJECT_DIR, user_dir))
+    # Prevent directory traversal outside the project
+    if not candidate.startswith(PROJECT_DIR):
+        raise ValueError('Directory not allowed')
+    return candidate
 
 class CameraRecorder:
-    def __init__(self, camera_id, output_file, hflip=False, vflip=False):
+    def __init__(self, camera_id, hflip=False, vflip=False):
         self.camera = Picamera2(camera_id)
-        self.output_file = output_file
         self.encoder = H264Encoder(10000000)
-        self.output = FfmpegOutput(output_file)
+        self.output_file = None
+        self.output = None
         self.hflip = hflip
         self.vflip = vflip
+        self.camera_id = camera_id
 
     def configure(self):
         video_config = self.camera.create_video_configuration(
@@ -58,11 +72,61 @@ class CameraRecorder:
 
         self.camera.configure(video_config)
 
-    def start_recording(self):
-        self.camera.start_recording(self.encoder, self.output)
+    def start_recording(self, output_file):
+        import subprocess
+        import logging
+        if self.output is not None:
+            self.stop_recording()
+        self.output_file = output_file
+        # Set FFREPORT so ffmpeg writes a report file we can inspect if it fails
+        prev_ffreport = os.environ.get('FFREPORT')
+        report_path = f"{output_file}.ffreport"
+        os.environ['FFREPORT'] = f"file={report_path}:level=32"
+        try:
+            logging.info(f"Creating FfmpegOutput for {output_file} (ffreport={report_path})")
+            self.output = FfmpegOutput(output_file)
+        except Exception as exc:
+            logging.exception(f"Failed to create FfmpegOutput for {output_file}: {exc}")
+            if prev_ffreport is None:
+                del os.environ['FFREPORT']
+            else:
+                os.environ['FFREPORT'] = prev_ffreport
+            raise
+        try:
+            self.camera.start_recording(self.encoder, self.output)
+            logging.info(f"Camera.start_recording returned for camera {self.camera_id}")
+        except Exception as exc:
+            logging.exception(f"Camera.start_recording failed for camera {self.camera_id}: {exc}")
+            if prev_ffreport is None:
+                del os.environ['FFREPORT']
+            else:
+                os.environ['FFREPORT'] = prev_ffreport
+            raise
+        # Restore prev FFREPORT in our process env (ffmpeg child already inherited it)
+        if prev_ffreport is None:
+            del os.environ['FFREPORT']
+        else:
+            os.environ['FFREPORT'] = prev_ffreport
+
+        # give ffmpeg a moment to appear in process table
+        time.sleep(0.2)
+        try:
+            ps_out = subprocess.check_output(['ps', '-eo', 'pid,cmd'], text=True, stderr=subprocess.DEVNULL)
+            ffprocs = [l for l in ps_out.splitlines() if 'ffmpeg' in l]
+            if ffprocs:
+                logging.debug(f"ffmpeg processes detected after start: {ffprocs}")
+            else:
+                logging.warning("No ffmpeg processes detected after start")
+        except Exception:
+            logging.exception('Failed to inspect process list')
+
+        logging.info(f"Recording started on camera {self.camera_id} to {output_file}")
 
     def stop_recording(self):
         self.camera.stop_recording()
+        print(f"Recording stopped on camera {self.camera_id}")
+        self.output = None
+        self.output_file = None
 
     def start_preview(self, preview_type=Preview.QT):
         self.camera.start_preview(preview_type)
@@ -71,6 +135,9 @@ class CameraRecorder:
         self.camera.stop_preview()
 
     def stop(self):
+        if self.output is not None:
+            self.stop_recording()
+        print(f"Shutting down camera {self.camera_id}...")
         self.camera.stop()
 
 
@@ -115,11 +182,11 @@ def main():
 
     # Ensure output directory exists
     os.makedirs(args.directory, exist_ok=True)
-    output1_path = os.path.join(args.directory, args.output1)
-    output2_path = os.path.join(args.directory, args.output2)
+    output1_path = _safe_directory(os.path.join(args.directory, args.output1))
+    output2_path =_safe_directory(os.path.join(args.directory, args.output2))
 
-    cam1 = CameraRecorder(0, output1_path)
-    cam2 = CameraRecorder(1, output2_path)
+    cam1 = CameraRecorder(0)
+    cam2 = CameraRecorder(1)
 
     # Set up signal handler for graceful shutdown
     def signal_handler(signum, frame):
@@ -135,8 +202,8 @@ def main():
     cam2.configure()
 
     print("Starting recording... Press Ctrl+C to stop")
-    cam1.start_recording()
-    cam2.start_recording()
+    cam1.start_recording(output1_path)
+    cam2.start_recording(output2_path)
 
     try:
         time.sleep(args.duration * 60)

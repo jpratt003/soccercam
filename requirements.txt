@@ -1,0 +1,3 @@
+Flask>=2.0
+# picamera2 and libcamera are not listed here because they are system packages
+# and typically installed via raspbian package manager or a platform-specific method.
