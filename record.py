@@ -55,6 +55,7 @@ class CameraRecorder:
         self.hflip = hflip
         self.vflip = vflip
         self.camera_id = camera_id
+        self.is_started = False
 
     def configure(self):
         video_config = self.camera.create_video_configuration(
@@ -71,12 +72,15 @@ class CameraRecorder:
         )
 
         self.camera.configure(video_config)
+        self.camera.start()
+        self.is_started = True
 
     def start_recording(self, output_file):
         import subprocess
         import logging
         if self.output is not None:
             self.stop_recording()
+        
         self.output_file = output_file
         # Set FFREPORT so ffmpeg writes a report file we can inspect if it fails
         prev_ffreport = os.environ.get('FFREPORT')
@@ -85,6 +89,7 @@ class CameraRecorder:
         try:
             logging.info(f"Creating FfmpegOutput for {output_file} (ffreport={report_path})")
             self.output = FfmpegOutput(output_file)
+            logging.info(f"FfmpegOutput created: {self.output}")
         except Exception as exc:
             logging.exception(f"Failed to create FfmpegOutput for {output_file}: {exc}")
             if prev_ffreport is None:
@@ -93,6 +98,7 @@ class CameraRecorder:
                 os.environ['FFREPORT'] = prev_ffreport
             raise
         try:
+            logging.info(f"Calling camera.start_recording with encoder and output...")
             self.camera.start_recording(self.encoder, self.output)
             logging.info(f"Camera.start_recording returned for camera {self.camera_id}")
         except Exception as exc:
@@ -123,7 +129,26 @@ class CameraRecorder:
         logging.info(f"Recording started on camera {self.camera_id} to {output_file}")
 
     def stop_recording(self):
-        self.camera.stop_recording()
+        import logging
+        import time
+        try:
+            self.camera.stop_recording()
+        except Exception as exc:
+            logging.exception(f"Error stopping camera recording: {exc}")
+        
+        # Give ffmpeg time to finalize the file and close properly
+        time.sleep(0.5)
+        
+        # Properly close the output to flush buffers and finalize the file
+        if self.output is not None:
+            try:
+                self.output.stop()
+            except AttributeError:
+                # FfmpegOutput may not have stop(), just close the file
+                pass
+            except Exception as exc:
+                logging.exception(f"Error stopping output: {exc}")
+        
         print(f"Recording stopped on camera {self.camera_id}")
         self.output = None
         self.output_file = None
@@ -139,6 +164,7 @@ class CameraRecorder:
             self.stop_recording()
         print(f"Shutting down camera {self.camera_id}...")
         self.camera.stop()
+        self.is_started = False
 
 
 def cleanup_cameras(cam1, cam2, preview_enabled):

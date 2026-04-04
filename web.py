@@ -9,6 +9,7 @@ Open http://<pi-ip>:5000 in a browser.
 """
 from flask import Flask, jsonify, request, render_template_string, send_from_directory, abort
 import threading
+import queue
 import os
 import time
 from pathlib import Path
@@ -277,69 +278,104 @@ class RecordingManager:
     def __init__(self):
         self.lock = threading.Lock()
         self.running = False
+        self.busy = False
         self.thread = None
         self.stop_event = threading.Event()
-        self.cam1 = CameraRecorder(camera_id=0, hflip=False, vflip=False)
-        self.cam2 = CameraRecorder(camera_id=1, hflip=False, vflip=False)
-        self.cam1.configure()
-        self.cam2.configure()
+        self.command_queue = queue.Queue()
+        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker.start()
+        self.cam1 = None
+        self.cam2 = None
         self.output_dir = 'videos'
         self.output1 = None
         self.output2 = None
         self.start_time = None
         self.duration_minutes = None
         self.last_error = None
-        # watcher removed; keep minimal state
+
+    def _worker_loop(self):
+        while True:
+            command = self.command_queue.get()
+            if command is None:
+                break
+            cmd_type = command.get('type')
+            reply = command.get('reply')
+            result = (False, 'Worker error')
+            try:
+                if cmd_type == 'start':
+                    result = self._do_start(**command.get('params', {}))
+                elif cmd_type == 'stop':
+                    result = self._do_stop()
+                else:
+                    result = False, f'Unknown command: {cmd_type}'
+            except Exception as exc:
+                logging.exception('Worker command failed')
+                result = False, f'Worker exception: {exc}'
+            if reply is not None:
+                reply.put(result)
 
     def _build_directories(self, output_dir, out1='left_camera.mp4', out2='right_camera.mp4'):
         os.makedirs(output_dir, exist_ok=True)
         output1_path = os.path.join(output_dir, out1)
         output2_path = os.path.join(output_dir, out2)
-        # Create new CameraRecorder instances that point to the target files
         self.output_dir = output_dir
         self.output1 = output1_path
         self.output2 = output2_path
 
-    def start(self, duration_minutes=None, left_name='left_camera.mp4', right_name='right_camera.mp4'):
+    def _do_start(self, output_dir, duration_minutes=None, left_name='left_camera.mp4', right_name='right_camera.mp4'):
         with self.lock:
             if self.running:
                 return False, 'Already running'
+        self._build_directories(output_dir, out1=left_name, out2=right_name)
 
-            # Build cameras with requested filenames
-            self._build_directories(self.output_dir, out1=left_name, out2=right_name)
+        try:
+            logging.info('Creating camera instances for recording')
+            self.cam1 = CameraRecorder(camera_id=0, hflip=False, vflip=False)
+            self.cam2 = CameraRecorder(camera_id=1, hflip=False, vflip=False)
+            logging.info(f'Camera instances created: cam1={self.cam1}, cam2={self.cam2}')
 
+            logging.info('Configuring cameras')
+            self.cam1.configure()
+            logging.info('Camera 1 configured')
+            self.cam2.configure()
+            logging.info('Camera 2 configured')
+
+            logging.info('Waiting for camera stabilization...')
+            time.sleep(0.5)
+
+            logging.info(f'Starting recording to: {self.output1}, {self.output2}')
+            self.cam1.start_recording(self.output1)
+            self.cam2.start_recording(self.output2)
+
+            time.sleep(0.5)
+            logging.info('Recording processes started')
+
+        except Exception as exc:
+            self.last_error = f'Failed to start recording: {exc}'
             try:
-                self.cam1.start_recording(self.output1)
-                self.cam2.start_recording(self.output2)
+                if self.cam1:
+                    self.cam1.stop()
+            except Exception:
+                pass
+            try:
+                if self.cam2:
+                    self.cam2.stop()
+            except Exception:
+                pass
+            with self.lock:
+                self.running = False
+                self.busy = False
+            return False, self.last_error
 
-                # give ffmpeg a moment to spawn if it's going to
-                time.sleep(0.5)
-                # keep start logging minimal
-                logging.info('Recording processes started')
-
-            except Exception as exc:
-                self.last_error = f'Failed to start recording: {exc}'
-                try:
-                    if self.cam1:
-                        self.cam1.stop()
-                except Exception:
-                    pass
-                try:
-                    if self.cam2:
-                        self.cam2.stop()
-                except Exception:
-                    pass
-                return False, self.last_error
-
-            # Clear previous errors on successful start
+        with self.lock:
             self.last_error = None
             self.running = True
+            self.busy = False
             self.stop_event.clear()
             self.start_time = time.time()
             self.duration_minutes = duration_minutes
 
             if duration_minutes:
-                # Run a thread that will stop recording after the duration
                 def timed_stop():
                     finished = self.stop_event.wait(duration_minutes * 60)
                     if not finished:
@@ -347,43 +383,104 @@ class RecordingManager:
                 self.thread = threading.Thread(target=timed_stop, daemon=True)
                 self.thread.start()
 
-            return True, 'Recording started' 
+        return True, 'Recording started'
 
-    def stop(self):
-        print("\nStopping recording and shutting down cameras...")
+    def start(self, output_dir='videos', duration_minutes=None, left_name='left_camera.mp4', right_name='right_camera.mp4'):
+        with self.lock:
+            if self.running or self.busy:
+                return False, 'Already running or busy'
+            self.busy = True
+
+        reply = queue.Queue(maxsize=1)
+        self.command_queue.put({
+            'type': 'start',
+            'params': {
+                'output_dir': output_dir,
+                'duration_minutes': duration_minutes,
+                'left_name': left_name,
+                'right_name': right_name,
+            },
+            'reply': reply,
+        })
+
+        try:
+            ok, msg = reply.get(timeout=60)
+            return ok, msg
+        except queue.Empty:
+            with self.lock:
+                self.busy = False
+            return False, 'Recording worker timeout'
+
+    def _do_stop(self):
         with self.lock:
             if not self.running:
+                self.busy = False
                 return False, 'Not running'
-            try:
-                if self.cam1:
-                    self.cam1.stop_recording()
-            except Exception:
-                pass
-            try:
-                if self.cam2:
-                    self.cam2.stop_recording()
-            except Exception:
-                pass
 
-            try:
-                if self.cam1:
-                    self.cam1.stop()
-                if self.cam2:
-                    self.cam2.stop()
-            except Exception:
-                pass
+        try:
+            if self.cam1:
+                self.cam1.stop_recording()
+        except Exception:
+            pass
+        try:
+            if self.cam2:
+                self.cam2.stop_recording()
+        except Exception:
+            pass
+
+        try:
+            if self.cam1:
+                self.cam1.stop()
+            if self.cam2:
+                self.cam2.stop()
+        except Exception:
+            pass
+
+        with self.lock:
+            self.cam1 = None
+            self.cam2 = None
             self.running = False
+            self.busy = False
             self.stop_event.set()
-            # Clear timing info
             self.start_time = None
             self.duration_minutes = None
-            return True, 'Stopped'
+
+        return True, 'Stopped'
+
+    def stop(self):
+        with self.lock:
+            if not self.running or self.busy:
+                return False, 'Not running or busy'
+            self.busy = True
+
+        reply = queue.Queue(maxsize=1)
+        self.command_queue.put({
+            'type': 'stop',
+            'reply': reply,
+        })
+
+        try:
+            ok, msg = reply.get(timeout=60)
+            return ok, msg
+        except queue.Empty:
+            with self.lock:
+                self.busy = False
+            return False, 'Recording worker timeout'
 
     def status(self):
+        with self.lock:
+            running = self.running
+            output1 = self.output1
+            output2 = self.output2
+            output_dir = self.output_dir
+            start_time = self.start_time
+            duration_minutes = self.duration_minutes
+            last_error = self.last_error
+
         remaining = None
-        if self.running and self.start_time and self.duration_minutes:
-            elapsed = time.time() - self.start_time
-            total = (self.duration_minutes or 0) * 60
+        if running and start_time and duration_minutes:
+            elapsed = time.time() - start_time
+            total = (duration_minutes or 0) * 60
             remaining = int(max(0, total - elapsed))
         # include recent undervoltage lines (best-effort)
         underv = ''
@@ -392,14 +489,14 @@ class RecordingManager:
         except Exception:
             underv = ''
         return {
-            'running': self.running,
-            'output1': self.output1,
-            'output2': self.output2,
-            'output_dir': self.output_dir,
-            'start_time': self.start_time,
-            'duration_minutes': self.duration_minutes,
+            'running': running,
+            'output1': output1,
+            'output2': output2,
+            'output_dir': output_dir,
+            'start_time': start_time,
+            'duration_minutes': duration_minutes,
             'remaining_seconds': remaining,
-            'last_error': self.last_error,
+            'last_error': last_error,
             'undervoltage_recent': bool(underv.strip()),
             'undervoltage_lines': underv.strip().splitlines(),
         }
@@ -434,12 +531,12 @@ def start():
     right = data.get('right') or data.get('right_name') or 'right_camera.mp4'
 
     try:
-        manager.output_dir = safe_directory(directory)
+        safe_dir = safe_directory(directory)
     except ValueError:
         return jsonify({'ok': False, 'msg': 'Invalid directory'}), 400
 
     logging.info(f"Start request: dir={directory} left={left} right={right} duration={duration}")
-    ok, msg = manager.start(duration_minutes=duration, left_name=left, right_name=right)
+    ok, msg = manager.start(output_dir=safe_dir, duration_minutes=duration, left_name=left, right_name=right)
     logging.info(f"Start result: ok={ok} msg={msg}")
     if manager.last_error:
         logging.error(f"Last error after start: {manager.last_error}")
@@ -516,4 +613,4 @@ def download():
 if __name__ == '__main__':
     logging.info('Starting SoccerCam web server on 0.0.0.0:5000')
     logging.info(f"WorkingDirectory={PROJECT_DIR}")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=False, use_reloader=False)
